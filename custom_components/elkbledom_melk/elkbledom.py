@@ -11,6 +11,7 @@ except Exception:
     try:
         from bleak.exc import BleakError as BleakDBusError
     except Exception:
+
         class BleakDBusError(Exception):
             pass
 
@@ -53,8 +54,7 @@ MIN_COLOR_TEMPS_K = [1800] * 8
 MAX_COLOR_TEMPS_K = [7000] * 8
 
 DEFAULT_ATTEMPTS = 3
-BLEAK_BACKOFF_TIME = 0.25
-STATE_FILE = "/config/.storage/elkbledom_melk_state.json"
+BLEAK_BACKOFF_TIME = 0.35
 RETRY_BACKOFF_EXCEPTIONS = (BleakDBusError,)
 WrapFuncType = TypeVar("WrapFuncType", bound=Callable[..., Any])
 
@@ -76,6 +76,7 @@ def retry_bluetooth_connection_error(func: WrapFuncType) -> WrapFuncType:
                     LOGGER.error("%s: BLE exception: %s", self.name, err)
                     raise
                 await asyncio.sleep(BLEAK_BACKOFF_TIME)
+
     return cast(WrapFuncType, _async_wrap_retry)
 
 
@@ -114,12 +115,16 @@ class BLEDOMInstance:
         self._detect_model()
         asyncio.create_task(self._async_init_state())
 
-    # -------------------- state --------------------
+    def _state_path(self) -> str:
+        # Works for HA Core, Supervised and Container
+        return self._hass.config.path(".storage", "elkbledom_melk_state.json")
+
     def _load_state_sync(self):
+        path = self._state_path()
         try:
-            os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-            if os.path.exists(STATE_FILE):
-                with open(STATE_FILE, "r", encoding="utf-8") as f:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     return data.get(self.address, {})
         except Exception as e:
@@ -130,12 +135,13 @@ class BLEDOMInstance:
         return await self._hass.async_add_executor_job(self._load_state_sync)
 
     def _save_state_sync(self, payload: dict | None = None):
+        path = self._state_path()
         try:
-            os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
             data: dict = {}
-            if os.path.exists(STATE_FILE):
+            if os.path.exists(path):
                 try:
-                    with open(STATE_FILE, "r", encoding="utf-8") as f:
+                    with open(path, "r", encoding="utf-8") as f:
                         data = json.load(f)
                 except json.JSONDecodeError:
                     data = {}
@@ -149,7 +155,7 @@ class BLEDOMInstance:
                 }
 
             data[self.address] = payload
-            with open(STATE_FILE, "w", encoding="utf-8") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
         except Exception as e:
             LOGGER.error("Failed to save state for %s: %s", self.address, e)
@@ -164,7 +170,6 @@ class BLEDOMInstance:
         self._color_temp_kelvin = int(state.get("color_temp", 5000))
         self._brightness_mode = str(state.get("brightness_mode", DEFAULT_BRIGHTNESS_MODE))
 
-    # -------------------- properties --------------------
     @property
     def name(self):
         return self._device.name if self._device else self.address
@@ -185,7 +190,6 @@ class BLEDOMInstance:
     def color_temp_kelvin(self) -> int:
         return getattr(self, "_color_temp_kelvin", 5000)
 
-    # -------------------- model detection --------------------
     def _detect_model(self):
         for i, name in enumerate(NAME_ARRAY):
             if self._device.name and self._device.name.lower().startswith(name.lower()):
@@ -200,17 +204,27 @@ class BLEDOMInstance:
         self._turn_on_cmd = TURN_ON_CMD[0]
         self._turn_off_cmd = TURN_OFF_CMD[0]
 
-    # -------------------- short-lived connection --------------------
     async def _write(self, data: list[int]):
-        """Connect → write → disconnect (Elkotrol / Magic Lantern style)."""
+        """Connect → write → disconnect (Elkotrol style)."""
         async with self._connect_lock:
             client = None
             try:
+                device = async_ble_device_from_address(
+                    self._hass, self.address, connectable=True
+                )
+                if device is None:
+                    device = async_ble_device_from_address(self._hass, self.address)
+                if device is None:
+                    raise BleakNotFoundError(
+                        f"{self.address}: not in Bluetooth discovery right now"
+                    )
+                self._device = device
+
                 client = await establish_connection(
                     BleakClientWithServiceCache,
                     self._device,
                     self._device.name or self.address,
-                    lambda c: None,  # no auto-reconnect on disconnect
+                    lambda _c: None,
                     cached_services=self._cached_services,
                 )
                 self._cached_services = client.services
@@ -232,18 +246,16 @@ class BLEDOMInstance:
                 LOGGER.error("%s: write failed: %s", self.name, e)
                 raise
             finally:
-                if client and client.is_connected:
+                if client is not None and getattr(client, "is_connected", False):
                     try:
                         await client.disconnect()
                     except Exception:
                         pass
+                await asyncio.sleep(0.2)
 
-    # -------------------- commands --------------------
     @retry_bluetooth_connection_error
     async def turn_on(self):
         await self._write(self._turn_on_cmd)
-        await asyncio.sleep(0.15)
-        await self.set_color(self._rgb_color, self._brightness)
         self._is_on = True
 
     @retry_bluetooth_connection_error
@@ -275,7 +287,7 @@ class BLEDOMInstance:
 
         async def write_native_then_rgb():
             await self._write_native_brightness(percent)
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.15)
             await self._write([0x7E, 0x00, 0x05, 0x03, r, g, b, 0x00, 0xEF])
 
         try:
@@ -359,4 +371,3 @@ class BLEDOMInstance:
 
     async def stop(self):
         await self._async_save_state()
-        # nothing persistent to disconnect
