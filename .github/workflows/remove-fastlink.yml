@@ -1,0 +1,34 @@
+name: Remove legacy FastLink component
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/remove-fastlink.yml'
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Remove elkbledom_fastlink
+        run: |
+          rm -rf custom_components/elkbledom_fastlink
+          rm -rf brands/elkbledom_fastlink
+          ls -la custom_components/
+          ls -la brands/
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --staged --quiet; then
+            echo "Nothing to remove"
+          else
+            git commit -m "Remove legacy elkbledom_fastlink component"
+            git push
+          fi
