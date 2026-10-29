@@ -36,6 +36,7 @@ class BLEDOMLight(LightEntity):
     _attr_min_color_temp_kelvin = 1800
     _attr_max_color_temp_kelvin = 7000
     _attr_supported_features = LightEntityFeature.EFFECT
+    _attr_icon = "mdi:led-strip-variant"
 
     def __init__(self, instance: BLEDOMInstance, name: str, entry_id: str) -> None:
         self._instance = instance
