@@ -1,0 +1,31 @@
+name: Generate MELK brand icons
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/generate-melk-icons.yml'
+      - 'scripts/generate_melk_icons.py'
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate PNG icons
+        run: python3 scripts/generate_melk_icons.py
+
+      - name: Commit icons
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add brands/elkbledom_melk/*.png
+          if git diff --staged --quiet; then
+            echo "No icon changes"
+          else
+            git commit -m "Update elkbledom_melk brand icons"
+            git push
+          fi
